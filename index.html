@@ -367,7 +367,7 @@ function onReady(){
   placeVideo();
 }
 function onState(e){
-  if (e.data === 5 && fallbackPending) { fallbackPending = false; finishFallback(); return; }
+  if (fallbackPending) return;
   if (e.data === 1) {
     playing = true; errs = 0;
     const t = byId.get(st.cur);
@@ -381,7 +381,8 @@ function onState(e){
   renderPlayBtn();
   if (e.data === 0) { if (st.cur && !counted) { bump(st.cur, 'p'); counted = true; } next(true); }
 }
-function onErr(){
+function onErr(e){
+  if (fallbackPending) { fallbackPending = false; status('YouTube ha rechazado la lista (error ' + (e && e.data) + '). Comprueba que sea pública u oculta.'); return; }
   if (st.cur) bad.add(st.cur);
   errs++;
   if (errs < 6) { toast('Canción no disponible, paso a la siguiente'); next(true, true); }
@@ -461,7 +462,13 @@ function startFallback(pl){
   status('Cargando sin clave…');
   fallbackPending = true;
   player.cuePlaylist({ listType: 'playlist', list: pl });
-  setTimeout(function(){ if (fallbackPending) { fallbackPending = false; status('YouTube no ha devuelto la lista. Comprueba el enlace y que no sea privada.'); } }, 12000);
+  let tries = 0;
+  const iv = setInterval(function(){
+    if (!fallbackPending) { clearInterval(iv); return; }
+    const ids = (player.getPlaylist && player.getPlaylist()) || [];
+    if (ids.length) { clearInterval(iv); fallbackPending = false; finishFallback(); }
+    else if (++tries > 40) { clearInterval(iv); fallbackPending = false; status('YouTube no ha devuelto la lista sin clave. Comprueba que no sea privada o usa una clave de la API.'); }
+  }, 500);
 }
 function finishFallback(){
   const ids = (player.getPlaylist && player.getPlaylist()) || [];
