@@ -134,7 +134,7 @@ legend{font-family:var(--display);font-size:18px;font-weight:600;padding:0;margi
 
 #scrim{display:none;position:absolute;inset:0;z-index:20;background:rgba(0,0,0,.55);align-items:flex-end}
 #scrim.on{display:flex}
-#sheet{width:100%;background:var(--surface);border-radius:22px 22px 0 0;padding:16px 12px calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:2px}
+#sheet{max-height:88%;overflow-y:auto;width:100%;background:var(--surface);border-radius:22px 22px 0 0;padding:16px 12px calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:2px}
 #sheet p{margin:0 12px 10px;font-weight:600;overflow-wrap:anywhere}
 #sheet button{min-height:52px;padding:0 12px;border-radius:12px;text-align:left}
 #sheet button:active{background:var(--surface2)}
@@ -259,6 +259,7 @@ legend{font-family:var(--display);font-size:18px;font-weight:600;padding:0;margi
     <div id="slot-now"></div>
     <div class="meta">
       <div style="min-width:0"><h2 id="now-title">Nada sonando</h2><p id="now-chan"></p></div>
+      <button class="round" id="add-pl" aria-label="Añadir a una playlist" style="color:var(--muted)"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h11M4 12h11M4 17h6M18 13v8M14 17h8"/></svg></button>
       <button class="round" id="fav" aria-pressed="false" aria-label="Favorita"><svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M12 20.500s-7.500-4.600-7.500-10.200A4.300 4.300 0 0 1 12 7.600a4.300 4.300 0 0 1 7.500 2.700c0 5.600-7.500 10.200-7.500 10.200z"/></svg></button>
     </div>
     <div class="seek">
@@ -1023,11 +1024,17 @@ $('b-repeat').addEventListener('click', function(){
   toast(S.repeat === 'off' ? 'Repetir: apagado' : S.repeat === 'one' ? 'Repetir: esta canción' : 'Repetir: toda la lista');
 });
 $('now-more').addEventListener('click', function(){
-  openSheet('Opciones', [
+  const cur = st.cur && byId.has(st.cur) ? st.cur : null;
+  openSheet(cur ? byId.get(cur).t : 'Opciones', (cur ? [
+    ['Añadir a una playlist', function(){ chooseList(cur); }],
+    ['Más de este artista', function(){ moreFrom(cur); }],
+    ['Música parecida', function(){ startRadio(cur); }]
+  ] : []).concat([
     ['Volver a barajar', reshuffleRest],
     ['Vaciar la cola (' + st.queue.length + ')', function(){ st.queue = []; saveState(); renderNow(); }]
-  ]);
+  ]));
 });
+$('add-pl').addEventListener('click', function(){ if (st.cur && byId.has(st.cur)) chooseList(st.cur); else toast('Pon primero una canción'); });
 $('scrim').addEventListener('click', e => { if (e.target === $('scrim')) $('scrim').classList.remove('on'); });
 $('seek').addEventListener('input', function(){ dragging = true; if (ready && player.getDuration) $('t-cur').textContent = fmt(this.value / 1000 * (player.getDuration() || 0)); });
 $('seek').addEventListener('change', function(){ if (ready && st.cur) player.seekTo(this.value / 1000 * (player.getDuration() || 0), true); dragging = false; });
