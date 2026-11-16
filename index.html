@@ -65,6 +65,9 @@ h1{font-family:var(--display);font-size:30px;line-height:1.1;margin:0;text-wrap:
 .titlerow>div{min-width:0}
 .chips{display:flex;gap:8px;overflow-x:auto;margin:0 -24px;padding:2px 24px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
+.chips{cursor:grab;user-select:none;-webkit-user-select:none}
+.chips.drag{cursor:grabbing}
+.chips.drag .chip{pointer-events:none}
 .chip{flex:none;min-height:40px;padding:0 16px;border-radius:20px;background:var(--surface);color:var(--muted);font-size:14px;font-weight:500;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .chip[aria-pressed="true"]{background:var(--text);color:var(--bg);font-weight:600}
 .chip.add{background:transparent;border:1px dashed #4A4558;color:var(--text)}
@@ -139,7 +142,11 @@ legend{font-family:var(--display);font-size:18px;font-weight:600;padding:0;margi
 #sheet button.ok{background:var(--accent);color:var(--bg);font-weight:600;text-align:center;margin:0 12px}
 #toast{position:absolute;z-index:30;left:50%;bottom:150px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:10px 16px;border-radius:20px;font-size:13px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s;max-width:86%;text-align:center}
 #toast.on{opacity:1}
-@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+@keyframes inr{from{transform:translateX(36px);opacity:.3}}
+@keyframes inl{from{transform:translateX(-36px);opacity:.3}}
+.view.inr{animation:inr .18s ease}
+.view.inl{animation:inl .18s ease}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}.view.inr,.view.inl{animation:none}}
 </style>
 </head>
 <body data-view="list" data-prev="list">
@@ -691,12 +698,15 @@ function renderToggles(){
   $('rep-one').textContent = S.repeat === 'one' ? '1' : '';
 }
 function renderAll(){ renderLists(); renderNow(); renderPlayBtn(); renderToggles(); }
+let swipeDir = null;
 function setView(v){
   const b = document.body;
   if (v === 'now') { if (b.dataset.view !== 'now') b.dataset.prev = b.dataset.view; }
   else b.dataset.prev = v;
   b.dataset.view = v;
   document.querySelectorAll('.tabs button').forEach(x => { if (x.dataset.tab === b.dataset.prev) x.setAttribute('aria-current', 'page'); else x.removeAttribute('aria-current'); });
+  if (swipeDir && v !== 'now') { const el = $('view-' + v); el.classList.remove('inr', 'inl'); void el.offsetWidth; el.classList.add(swipeDir === 'r' ? 'inr' : 'inl'); }
+  swipeDir = null;
   placeVideo();
 }
 function placeVideo(){
@@ -913,6 +923,60 @@ $('scrim').addEventListener('click', e => { if (e.target === $('scrim')) $('scri
 $('seek').addEventListener('input', function(){ dragging = true; if (ready && player.getDuration) $('t-cur').textContent = fmt(this.value / 1000 * (player.getDuration() || 0)); });
 $('seek').addEventListener('change', function(){ if (ready && st.cur) player.seekTo(this.value / 1000 * (player.getDuration() || 0), true); dragging = false; });
 window.addEventListener('resize', placeVideo);
+
+/* Fila de playlists: arrastrar con el ratón o usar la rueda para moverla a los lados. */
+(function(){
+  const el = $('chips'); let down = false, moved = false, sx = 0, sl = 0;
+  el.addEventListener('mousedown', function(e){ if (e.button !== 0) return; down = true; moved = false; sx = e.pageX; sl = el.scrollLeft; });
+  window.addEventListener('mousemove', function(e){
+    if (!down) return;
+    const dx = e.pageX - sx;
+    if (!moved && Math.abs(dx) > 5) { moved = true; el.classList.add('drag'); }
+    if (moved) { el.scrollLeft = sl - dx; e.preventDefault(); }
+  });
+  window.addEventListener('mouseup', function(){ if (!down) return; down = false; el.classList.remove('drag'); setTimeout(function(){ moved = false; }, 0); });
+  el.addEventListener('click', function(e){ if (moved) { e.stopPropagation(); e.preventDefault(); } }, true);
+  el.addEventListener('dragstart', function(e){ e.preventDefault(); });
+  el.addEventListener('wheel', function(e){ if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { el.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+})();
+
+/* Gestos táctiles: deslizar a los lados cambia de pestaña; en el reproductor, a los lados cambia
+   de canción y hacia abajo lo cierra; hacia arriba sobre la barra pequeña lo abre. */
+(function(){
+  const app = $('app'), now = $('now'), vid = $('video'), TABS = ['list', 'search', 'favs', 'settings'];
+  let t0 = null, mode = null;
+  function setY(y, anim){ [now, vid].forEach(function(el){ el.style.transition = anim ? 'transform .18s ease' : ''; el.style.transform = y ? 'translateY(' + y + 'px)' : ''; }); }
+  app.addEventListener('touchstart', function(e){
+    t0 = null; mode = null;
+    if (e.touches.length !== 1 || e.target.closest('#chips, #scrim, input, textarea, select')) return;
+    const p = e.touches[0];
+    t0 = { x: p.clientX, y: p.clientY, mini: !!e.target.closest('.mini'), top: now.scrollTop <= 0 };
+  }, { passive: true });
+  app.addEventListener('touchmove', function(e){
+    if (!t0) return;
+    const p = e.touches[0], dx = p.clientX - t0.x, dy = p.clientY - t0.y;
+    if (!mode && (Math.abs(dx) > 12 || Math.abs(dy) > 12)) mode = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+    if (mode === 'v' && document.body.dataset.view === 'now' && t0.top && dy > 0) setY(dy, false);
+  }, { passive: true });
+  app.addEventListener('touchend', function(e){
+    if (!t0) return;
+    const p = e.changedTouches[0], dx = p.clientX - t0.x, dy = p.clientY - t0.y, s = t0, view = document.body.dataset.view;
+    const side = mode === 'h' && Math.abs(dx) > 70 && Math.abs(dx) > 2 * Math.abs(dy);
+    t0 = null;
+    if (view === 'now') {
+      if (mode === 'v' && s.top && dy > 90) { setY(0, false); setView(document.body.dataset.prev || 'list'); return; }
+      setY(0, true);
+      if (side) { if (dx < 0) next(false); else prev(); }
+      return;
+    }
+    if (mode === 'v' && s.mini && dy < -40) { setView('now'); return; }
+    if (side) {
+      const i = TABS.indexOf(view), j = i + (dx < 0 ? 1 : -1);
+      if (i > -1 && j >= 0 && j < TABS.length) { swipeDir = dx < 0 ? 'r' : 'l'; setView(TABS[j]); }
+    }
+  }, { passive: true });
+  app.addEventListener('touchcancel', function(){ t0 = null; setY(0, true); }, { passive: true });
+})();
 
 /* Ajustes */
 $('s-key').value = S.key; $('s-lists').value = S.lists; $('s-client').value = S.client || '';
