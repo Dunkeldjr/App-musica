@@ -177,7 +177,7 @@ legend{font-family:var(--display);font-size:18px;font-weight:600;padding:0;margi
 
   <section class="view" id="view-search">
     <div class="head">
-      <div><h1>Buscar</h1><div class="sub">En todo YouTube. Cada búsqueda gasta cuota: unas 100 al día.</div></div>
+      <div><h1>Buscar</h1><div class="sub" id="search-sub">En todo YouTube. Cada búsqueda gasta cuota: unas 100 al día.</div></div>
       <form class="sform" id="sform">
         <div class="search">
           <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.500"/><path d="M16 16l4 4"/></svg>
@@ -186,6 +186,10 @@ legend{font-family:var(--display);font-size:18px;font-weight:600;padding:0;margi
         </div>
         <button class="pill solid" type="submit">Buscar</button>
       </form>
+      <div class="pair">
+        <button class="pill line" id="more-artist">Más del artista</button>
+        <button class="pill line" id="more-radio">Música parecida</button>
+      </div>
     </div>
     <ul class="rows" id="results"><li class="empty">Escribe una canción o un artista y pulsa Buscar. Toca un resultado para escucharlo, o sus tres puntos para añadirlo a una playlist.</li></ul>
   </section>
@@ -473,6 +477,7 @@ function onState(e){
   if (e.data === 0) { if (st.cur && !counted) { bump(st.cur, 'p'); counted = true; } next(true); }
 }
 function onErr(e){
+  if (radioPending) { const r = radioPending; radioPending = null; renderResults('YouTube no permite la mezcla automática de esta canción. Prueba con otra o usa «Más del artista».'); player.loadVideoById({ videoId: r.id, startSeconds: r.at, suggestedQuality: 'small' }); return; }
   if (fallbackPending) { fallbackPending = false; status('YouTube ha rechazado la lista (error ' + (e && e.data) + '). Comprueba que sea pública u oculta.'); return; }
   if (st.cur) bad.add(st.cur);
   errs++;
@@ -859,6 +864,8 @@ function trackSheet(id, ctx){
   const t = byId.get(id), own = lists.find(x => x.id === ctx);
   openSheet(t.t, (editable(own) ? [['Quitar de esta playlist', function(){ removeFrom(own.id, id); }]] : []).concat([
     ['Añadir a una playlist', function(){ chooseList(id); }],
+    ['Más de este artista', function(){ moreFrom(id); }],
+    ['Música parecida', function(){ startRadio(id); }],
     ['Reproducir a continuación', function(){ st.queue = st.queue.filter(x => x !== id); st.queue.unshift(id); saveState(); renderNow(); toast('Sonará a continuación'); }],
     ['Añadir a la cola', function(){ if (!st.queue.includes(id)) st.queue.push(id); saveState(); renderNow(); toast('Añadida a la cola'); }],
     [favs.has(id) ? 'Quitar de favoritas' : 'Añadir a favoritas', function(){ toggleFav(id); }]
@@ -869,24 +876,102 @@ function playOne(id){ if (!know(id)) return; fwd = []; playId(id); }
 function renderResults(msg){
   $('results').innerHTML = msg ? '<li class="empty">' + esc(msg) + '</li>' : lastRes.map(rowHtml).join('');
 }
+function mapSearch(j){
+  return (j.items || []).filter(it => it.id && it.id.videoId).map(it => byId.get(it.id.videoId) || { id: it.id.videoId, t: decode(it.snippet.title), c: decode(it.snippet.channelTitle).replace(/ - Topic$/, ''), d: 0 });
+}
+async function fillDur(list){
+  const need = list.filter(t => !t.d);
+  for (let i = 0; i < need.length; i += 50) {
+    const chunk = need.slice(i, i + 50);
+    try {
+      const v = await api('videos', { part: 'contentDetails', id: chunk.map(x => x.id).join(',') });
+      const m = new Map((v.items || []).map(x => [x.id, iso(x.contentDetails.duration)]));
+      chunk.forEach(x => { x.d = m.get(x.id) || 0; });
+    } catch (e) {}
+  }
+}
+function showResults(res, label, emptyMsg){
+  lastRes = res; found = new Map(res.map(t => [t.id, t]));
+  $('search-sub').textContent = label;
+  renderResults(res.length ? '' : emptyMsg);
+}
 async function doSearch(){
   const q = $('sq').value.trim(); if (!q) return;
   if (!authed() && !S.key) { renderResults('Para buscar hace falta la clave de la API o conectar tu cuenta en Ajustes.'); return; }
   renderResults('Buscando…');
   try {
-    const j = await api('search', { part: 'snippet', type: 'video', maxResults: 25, q: q });
-    const res = (j.items || []).filter(it => it.id && it.id.videoId).map(it => byId.get(it.id.videoId) || { id: it.id.videoId, t: decode(it.snippet.title), c: decode(it.snippet.channelTitle).replace(/ - Topic$/, ''), d: 0 });
-    const need = res.filter(t => !t.d);
-    if (need.length) {
+    const res = mapSearch(await api('search', { part: 'snippet', type: 'video', maxResults: 25, q: q }));
+    await fillDur(res);
+    showResults(res, 'Resultados de «' + q + '»', 'Sin resultados para «' + q + '».');
+  } catch (e) { renderResults('No se pudo buscar: ' + e.message); }
+}
+/* "Más de este artista": los vídeos del mismo canal (casi sin gastar cuota); si el canal no los
+   publica, una búsqueda de música con el nombre del artista. YouTube no ofrece "relacionados". */
+async function moreFrom(id){
+  const t = byId.get(id) || found.get(id);
+  if (!t) { toast('Pon primero una canción'); return; }
+  if (!authed() && !S.key) { toast('Hace falta la clave de la API o conectar tu cuenta'); return; }
+  setView('search'); renderResults('Buscando más de ' + (t.c || 'este artista') + '…');
+  try {
+    const v = await api('videos', { part: 'snippet', id: id });
+    const sn = v.items && v.items[0] && v.items[0].snippet;
+    if (!sn) throw new Error('no encuentro esa canción en YouTube');
+    const name = String(sn.channelTitle || t.c || '').replace(/ - Topic$/, '');
+    let res = [];
+    try {
+      const j = await api('playlistItems', { part: 'snippet', maxResults: 50, playlistId: 'UU' + String(sn.channelId).slice(2) });
+      res = (j.items || []).map(function(it){
+        const s = it.snippet || {}, vid = s.resourceId && s.resourceId.videoId;
+        return vid && s.videoOwnerChannelTitle ? (byId.get(vid) || { id: vid, t: s.title, c: name, d: 0 }) : null;
+      }).filter(Boolean);
+    } catch (e) {}
+    if (res.length < 3) res = mapSearch(await api('search', { part: 'snippet', type: 'video', videoCategoryId: '10', maxResults: 25, q: name }));
+    const seen = new Set([id]);
+    res = res.filter(x => !seen.has(x.id) && seen.add(x.id));
+    await fillDur(res);
+    showResults(res, 'Más de ' + name, 'No he encontrado más canciones de ' + name + '.');
+  } catch (e) { renderResults('No se pudo cargar: ' + e.message); }
+}
+
+/* "Música parecida": la mezcla automática que YouTube genera a partir de una canción (su "radio").
+   La API no la ofrece, así que se le pide al propio reproductor y luego la app toma el control. */
+let radioPending = null;
+function startRadio(id){
+  const t = byId.get(id) || found.get(id);
+  if (!t) { toast('Pon primero una canción'); return; }
+  if (!ready) { toast('El reproductor aún se está cargando'); return; }
+  know(id);
+  const same = st.cur === id, at = same && player.getCurrentTime ? Math.floor(player.getCurrentTime() || 0) : 0;
+  if (!same && st.cur) { back.push(st.cur); if (back.length > 300) back.shift(); }
+  st.cur = id; st.time = at; if (!same) counted = false;
+  radioPending = { id: id, at: at, tries: 0 };
+  setView('search'); renderResults('Pidiendo a YouTube música parecida a «' + t.t + '»…');
+  player.loadPlaylist({ list: 'RD' + id, listType: 'playlist', index: 0, startSeconds: at });
+  renderNow(); markCurrent(); saveState();
+  const iv = setInterval(function(){
+    if (!radioPending || radioPending.id !== id) { clearInterval(iv); return; }
+    const ids = (player.getPlaylist && player.getPlaylist()) || [];
+    if (ids.length > 1) { clearInterval(iv); radioPending = null; finishRadio(id, t, ids.slice(0, 50)); }
+    else if (++radioPending.tries > 24) { clearInterval(iv); radioPending = null; renderResults('YouTube no ha devuelto música parecida para esta canción. Prueba con otra o usa «Más del artista».'); }
+  }, 500);
+}
+async function finishRadio(id, t, ids){
+  const res = ids.map(v => byId.get(v) || { id: v, t: 'Canción', c: '', d: 0 });
+  const need = res.filter(x => !x.c);
+  if (authed() || S.key) {
+    for (let i = 0; i < need.length; i += 50) {
+      const chunk = need.slice(i, i + 50);
       try {
-        const v = await api('videos', { part: 'contentDetails', id: need.map(x => x.id).join(',') });
-        const m = new Map((v.items || []).map(x => [x.id, iso(x.contentDetails.duration)]));
-        need.forEach(x => { x.d = m.get(x.id) || 0; });
+        const v = await api('videos', { part: 'snippet,contentDetails', id: chunk.map(x => x.id).join(',') });
+        const m = new Map((v.items || []).map(x => [x.id, x]));
+        chunk.forEach(function(x){ const it = m.get(x.id); if (it) { x.t = it.snippet.title; x.c = String(it.snippet.channelTitle || '').replace(/ - Topic$/, ''); x.d = iso(it.contentDetails.duration); } });
       } catch (e) {}
     }
-    lastRes = res; found = new Map(res.map(t => [t.id, t]));
-    renderResults(res.length ? '' : 'Sin resultados para «' + q + '».');
-  } catch (e) { renderResults('No se pudo buscar: ' + e.message); }
+  }
+  showResults(res, 'Parecidas a «' + t.t + '»', 'Sin resultados.');
+  lastRes.forEach(x => know(x.id));
+  fwd = []; st.ctx = 'search'; st.order = pool('search'); st.pos = Math.max(0, st.order.indexOf(id));
+  saveState(); renderNow(); markCurrent();
 }
 
 /* ---------- Eventos ---------- */
@@ -902,6 +987,8 @@ $('favlist').addEventListener('click', e => listClick(e, 'favs'));
 $('results').addEventListener('click', e => listClick(e, 'search'));
 $('sform').addEventListener('submit', function(e){ e.preventDefault(); $('sq').blur(); doSearch(); });
 $('pl-refresh').addEventListener('click', refresh);
+$('more-radio').addEventListener('click', function(){ if (st.cur) startRadio(st.cur); else toast('Pon primero una canción'); });
+$('more-artist').addEventListener('click', function(){ if (st.cur) moreFrom(st.cur); else toast('Pon primero una canción'); });
 $('pl-pick').addEventListener('change', function(e){
   const id = e.target.dataset && e.target.dataset.pl; if (!id) return;
   S.hidden = (S.hidden || []).filter(x => x !== id); if (!e.target.checked) S.hidden.push(id);
