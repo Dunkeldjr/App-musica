@@ -207,6 +207,7 @@ legend{font-family:var(--display);font-size:18px;font-weight:600;padding:0;margi
         <div class="field"><label for="s-lists">Enlaces de otras playlists, uno por línea (opcional)</label><textarea id="s-lists" spellcheck="false" placeholder="https://www.youtube.com/playlist?list=…"></textarea></div>
         <button class="pill solid" id="s-load" style="flex:none">Actualizar desde YouTube</button>
         <div id="status" role="status"></div>
+        <div id="pl-pick"></div>
         <p class="note">Con la cuenta conectada aparecen todas tus playlists de YouTube y puedes crear playlists y añadir canciones desde aquí. Sin conectar, la app solo lee los enlaces que pegues (playlists públicas u ocultas) con la clave.</p>
       </fieldset>
       <fieldset>
@@ -317,12 +318,21 @@ function saveLists(){ LS.set('lists', lists); }
 /* De dónde se reproduce: 'all' (todo), 'favs' o el id de una playlist propia. */
 function pool(ctx){
   if (ctx === 'favs') return Array.from(favs).filter(id => byId.has(id));
+  if (ctx === 'search') return lastRes.map(t => t.id).filter(id => byId.has(id));
   const l = lists.find(x => x.id === ctx);
   if (l) return l.ids.filter(id => byId.has(id));
-  return tracks.map(t => t.id);
+  // "Todas" = solo las playlists marcadas como música en Ajustes
+  const yts = lists.filter(x => x.yt);
+  if (!yts.length) return tracks.map(t => t.id);
+  const seen = new Set(), out = [];
+  for (const y of yts) if (!isHidden(y.id)) for (const id of y.ids) if (!seen.has(id) && byId.has(id)) { seen.add(id); out.push(id); }
+  return out;
 }
+function isHidden(id){ return (S.hidden || []).includes(id); }
+function isShuf(){ return S.shuffle && st.ctx !== 'search'; }   // los resultados de búsqueda van en su orden
 function ctxName(ctx){
   if (ctx === 'favs') return 'Favoritas';
+  if (ctx === 'search') return 'Resultados de búsqueda';
   const l = lists.find(x => x.id === ctx);
   return l ? l.name : (st.title || 'Mi música');
 }
@@ -354,7 +364,7 @@ function shuffled(ids){
 }
 function buildOrder(keepCurrent){
   const ids = pool(st.ctx);
-  if (!S.shuffle) { st.order = ids; st.pos = keepCurrent ? ids.indexOf(st.cur) : -1; return; }
+  if (!isShuf()) { st.order = ids; st.pos = keepCurrent ? ids.indexOf(st.cur) : -1; return; }
   if (keepCurrent && st.cur && ids.includes(st.cur)) { st.order = [st.cur].concat(shuffled(ids.filter(i => i !== st.cur))); st.pos = 0; }
   else { st.order = shuffled(ids); st.pos = -1; if (st.order.length > 1 && st.order[0] === st.cur) { st.order.push(st.order.shift()); } }
 }
@@ -390,7 +400,8 @@ function next(auto, force){
     else if (st.queue.length) id = st.queue.shift();
     else {
       if (st.pos + 1 >= st.order.length) {
-        if (auto && S.repeat === 'off') { playing = false; renderPlayBtn(); return; }
+        if (st.ctx === 'search') st.ctx = 'all';   // al acabar los resultados, vuelve a tu música
+        else if (auto && S.repeat === 'off') { playing = false; renderPlayBtn(); return; }
         buildOrder(false);
       }
       st.pos++; id = st.order[st.pos];
@@ -410,9 +421,9 @@ function playFromList(id, ctx){
   fwd = [];
   if (ctx !== st.ctx || !st.order.includes(id)) {
     st.ctx = ctx; const ids = pool(ctx);
-    st.order = S.shuffle ? [id].concat(shuffled(ids.filter(x => x !== id))) : ids;
+    st.order = isShuf() ? [id].concat(shuffled(ids.filter(x => x !== id))) : ids;
     st.pos = st.order.indexOf(id);
-  } else if (S.shuffle) {
+  } else if (isShuf()) {
     const o = st.order, i = o.indexOf(id);
     o.splice(i, 1); if (i <= st.pos) st.pos--;
     o.splice(st.pos + 1, 0, id); st.pos++;
@@ -653,10 +664,13 @@ function rowHtml(t){
     '<button class="more" aria-label="Opciones de ' + esc(t.t) + '">' + ICON_MORE + '</button></li>';
 }
 function renderLists(){
-  if (viewCtx !== 'all' && !lists.some(l => l.id === viewCtx)) viewCtx = 'all';
+  if (viewCtx !== 'all' && !lists.some(l => l.id === viewCtx && !isHidden(l.id))) viewCtx = 'all';
   const chip = (id, name) => '<button class="chip" data-ctx="' + esc(id) + '" aria-pressed="' + (id === viewCtx) + '">' + esc(name) + '</button>';
-  $('chips').innerHTML = chip('all', 'Todas') + lists.map(l => chip(l.id, l.name)).join('') + '<button class="chip add" data-new="1">+ Nueva playlist</button>';
+  $('chips').innerHTML = chip('all', 'Todas') + lists.filter(l => !isHidden(l.id)).map(l => chip(l.id, l.name)).join('') + '<button class="chip add" data-new="1">+ Nueva playlist</button>';
   $('pl-more').hidden = !editable(lists.find(l => l.id === viewCtx));
+  const yts = lists.filter(l => l.yt);
+  $('pl-pick').innerHTML = yts.length ? '<p class="note">Playlists que cuentan como tu música. Las desmarcadas no salen en «Todas» ni en la fila de playlists:</p>' +
+    yts.map((l, i) => '<div class="opt"><label for="pk' + i + '">' + esc(l.name) + ' · ' + l.ids.length + '</label><input type="checkbox" id="pk' + i + '" data-pl="' + esc(l.id) + '"' + (isHidden(l.id) ? '' : ' checked') + '></div>').join('') : '';
   const base = pool(viewCtx).map(id => byId.get(id));
   const q = $('q').value.trim().toLowerCase();
   const shown = q ? base.filter(t => (t.t + ' ' + t.c).toLowerCase().includes(q)) : base;
@@ -680,6 +694,7 @@ function renderNow(){
   $('now-title').textContent = t ? t.t : 'Nada sonando';
   $('now-chan').textContent = t ? t.c : '';
   $('mini-title').textContent = t ? t.t : 'Nada sonando';
+  $('now-list').textContent = ctxName(st.ctx);
   $('fav').setAttribute('aria-pressed', t && favs.has(t.id) ? 'true' : 'false');
   const n = byId.get(peekNext());
   $('up-title').textContent = n ? n.t : '—';
@@ -777,7 +792,7 @@ function addTo(lid, id){
     l.ids.push(id);
     if (l.yt) { l.pi = l.pi || {}; l.pi[id] = itemId; promote(id); }
     saveLists();
-    if (st.ctx === lid || (l.yt && st.ctx === 'all' && !st.order.includes(id))) { st.order.push(id); saveState(); }
+    if (st.ctx === lid || (l.yt && st.ctx === 'all' && !isHidden(lid) && !st.order.includes(id))) { st.order.push(id); saveState(); }
     renderLists(); renderNow(); toast('Añadida a ' + l.name);
   };
   if (!l.yt) { done(); return; }
@@ -879,7 +894,7 @@ function listClick(e, ctx){
   const go = e.target.closest('[data-go]'); if (go) { setView(go.dataset.go); return; }
   const row = e.target.closest('.row'); if (!row) return;
   if (e.target.closest('.more')) trackSheet(row.dataset.id, ctx);
-  else if (ctx === 'search') playOne(row.dataset.id);
+  else if (ctx === 'search') { lastRes.forEach(t => know(t.id)); playFromList(row.dataset.id, 'search'); }
   else playFromList(row.dataset.id, ctx);
 }
 $('list').addEventListener('click', e => listClick(e, viewCtx));
@@ -887,6 +902,13 @@ $('favlist').addEventListener('click', e => listClick(e, 'favs'));
 $('results').addEventListener('click', e => listClick(e, 'search'));
 $('sform').addEventListener('submit', function(e){ e.preventDefault(); $('sq').blur(); doSearch(); });
 $('pl-refresh').addEventListener('click', refresh);
+$('pl-pick').addEventListener('change', function(e){
+  const id = e.target.dataset && e.target.dataset.pl; if (!id) return;
+  S.hidden = (S.hidden || []).filter(x => x !== id); if (!e.target.checked) S.hidden.push(id);
+  saveSettings();
+  if (st.ctx === 'all' || isHidden(st.ctx)) { st.ctx = 'all'; buildOrder(true); saveState(); }
+  renderLists(); renderNow();
+});
 $('chips').addEventListener('click', function(e){
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.new) { askText('Nombre de la playlist', '', function(n){ createList(n, function(l){ viewCtx = l.id; renderLists(); }); }); return; }
@@ -1014,7 +1036,7 @@ $('s-import').addEventListener('click', function(){
 });
 
 index(); renderAuth();
-if (st.ctx !== 'all' && st.ctx !== 'favs' && !lists.some(l => l.id === st.ctx)) st.ctx = 'all';
+if (st.ctx !== 'all' && st.ctx !== 'favs' && !lists.some(l => l.id === st.ctx)) { st.ctx = 'all'; st.order = []; }
 if (tracks.length && !st.order.length) buildOrder(true);
 renderAll();
 if (!tracks.length) setView('settings'); else setView('list');
